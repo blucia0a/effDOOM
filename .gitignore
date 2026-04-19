@@ -1,0 +1,6 @@
+bld/
+*.o
+*.hex
+perf.out
+__pycache__/
+*.pyc
