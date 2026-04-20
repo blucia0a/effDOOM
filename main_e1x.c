@@ -194,14 +194,14 @@ static int rle_encode(const unsigned char *src, int n,
  * Every KEYFRAME_INTERVAL frames a full keyframe is sent; the rest are XOR
  * deltas against the previous frame.  Static regions XOR to 0x00 and
  * compress as long zero-runs (128 zeros → 2 bytes), cutting typical
- * gameplay frames from ~5500 B to ~800–2000 B and enabling FRAME_SKIP=10
- * (~3.5 fps) within the 11520 B/s budget at 115200 baud.
+ * gameplay frames from ~5500 B to ~800–2000 B and enabling FRAME_SKIP=5
+ * (~7 fps) within the 11520 B/s budget at 115200 baud.
  */
 #define DOOM_W            320
 #define DOOM_H            200
 #define OUT_W             160
 #define OUT_H             120
-#define FRAME_SKIP         10
+#define FRAME_SKIP          5
 #define KEYFRAME_INTERVAL  30
 
 /* worst-case RLE: ceil(OUT_W*OUT_H / 128) * 129 = 150*129 = 19350 bytes */
