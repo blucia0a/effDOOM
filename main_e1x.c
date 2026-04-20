@@ -142,28 +142,86 @@ long except_handler(long cause, long epc)
     return epc;
 }
 
-/* --- Frame dump: binary pixel stream over UART ---
+/* --- PackBits-style RLE encoder -----------------------------------------
+ * Header byte meaning:
+ *   0x00..0x7F  →  (b + 1) literal bytes follow           (1..128)
+ *   0x80..0xFF  →  (b - 126) copies of the next byte      (2..129)
+ * Worst case: ceil(n/128) * 129 bytes (all-unique input with 128-byte
+ * literal batching) — about 1% overhead, never more than ~1.008 × n. */
+static int rle_encode(const unsigned char *src, int n,
+                      unsigned char *dst, int cap)
+{
+    int si = 0, di = 0;
+    while (si < n) {
+        /* Count run of identical bytes (max 128) */
+        int run = 1;
+        while (si + run < n && run < 128 && src[si + run] == src[si])
+            run++;
+
+        if (run >= 2) {
+            if (di + 2 > cap) return -1;
+            dst[di++] = (unsigned char)(run + 126);   /* 0x80..0xFE */
+            dst[di++] = src[si];
+            si += run;
+        } else {
+            /* Accumulate literals, stopping before any run of >=2 */
+            int litstart = si;
+            int litcount = 0;
+            while (si < n && litcount < 128) {
+                if (si + 1 < n && src[si] == src[si + 1]) break;
+                si++;
+                litcount++;
+            }
+            if (litcount == 0) { si++; litcount = 1; } /* lone byte before long run */
+            if (di + 1 + litcount > cap) return -1;
+            dst[di++] = (unsigned char)(litcount - 1);  /* 0x00..0x7F */
+            for (int i = 0; i < litcount; i++)
+                dst[di++] = src[litstart + i];
+        }
+    }
+    return di;
+}
+
+/* --- Frame dump: RLE-compressed pixel stream over UART ------------------
  *
- * Each frame:
- *   [0xDE 0xAD 0xBE 0xEF]  4-byte sync marker
- *   [W_lo W_hi H_lo H_hi]  frame dimensions, uint16 little-endian
- *   [W*H bytes]            raw DOOM palette indices 0-255
+ * Wire format:
+ *   [0xDE 0xAD 0xBE 0xEF]   4-byte sync marker
+ *   [W_lo W_hi H_lo H_hi]   frame dimensions, uint16 LE
+ *   [len_lo len_hi]          compressed payload length, uint16 LE
+ *   [compressed bytes]       PackBits RLE of W×H palette indices
  *
- * Total: 8 + 80*60 = 4808 bytes per frame.
- * At 115200 baud (11520 bytes/sec) → ~2.4 frames/sec max.
- * FRAME_SKIP=15 ticks at ~35 Hz ≈ one frame per 0.43 s, matching throughput.
- *
- * Use doom_render.py on the host to decode and display with the DOOM palette.
+ * 160×120 raw = 19200 B.  DOOM's flat-shaded palette frames typically
+ * compress 3–4×, giving ~5000–6500 B/frame.  At FRAME_SKIP=20 (1.75 fps)
+ * that's ~9000–11400 B/s — within the 11520 B/s limit at 115200 baud.
  */
-#define DOOM_W     320
-#define DOOM_H     200
-#define OUT_W       80
-#define OUT_H       60
-#define FRAME_SKIP  15
+#define DOOM_W      320
+#define DOOM_H      200
+#define OUT_W       160
+#define OUT_H       120
+#define FRAME_SKIP   20
+
+/* worst-case RLE: ceil(OUT_W*OUT_H / 128) * 129 = 150*129 = 19350 bytes */
+#define RLE_BUF_MAX  20480
+
+static unsigned char frame_raw[OUT_W * OUT_H];
+static unsigned char frame_rle[RLE_BUF_MAX];
 
 static void dump_frame(void)
 {
     const unsigned char *fb = doom_get_framebuffer(1);
+    int i = 0;
+
+    /* Downsample 320×200 → OUT_W×OUT_H (nearest-neighbour) */
+    for (int y = 0; y < OUT_H; y++) {
+        int fy = (y * DOOM_H) / OUT_H;
+        for (int x = 0; x < OUT_W; x++) {
+            int fx = (x * DOOM_W) / OUT_W;
+            frame_raw[i++] = fb[fy * DOOM_W + fx];
+        }
+    }
+
+    int clen = rle_encode(frame_raw, OUT_W * OUT_H, frame_rle, RLE_BUF_MAX);
+    if (clen < 0) return; /* buffer too small — should never happen */
 
     /* sync marker */
     eff_uart_putc(STDIO_UART, 0xDE);
@@ -175,14 +233,12 @@ static void dump_frame(void)
     eff_uart_putc(STDIO_UART, (OUT_W >> 8) & 0xFF);
     eff_uart_putc(STDIO_UART, OUT_H & 0xFF);
     eff_uart_putc(STDIO_UART, (OUT_H >> 8) & 0xFF);
-    /* pixel data: raw DOOM palette indices, downsampled from 320x200 */
-    for (int y = 0; y < OUT_H; y++) {
-        int fy = (y * DOOM_H) / OUT_H;
-        for (int x = 0; x < OUT_W; x++) {
-            int fx = (x * DOOM_W) / OUT_W;
-            eff_uart_putc(STDIO_UART, fb[fy * DOOM_W + fx]);
-        }
-    }
+    /* compressed length (uint16 LE) */
+    eff_uart_putc(STDIO_UART, clen & 0xFF);
+    eff_uart_putc(STDIO_UART, (clen >> 8) & 0xFF);
+    /* compressed payload */
+    for (int j = 0; j < clen; j++)
+        eff_uart_putc(STDIO_UART, frame_rle[j]);
 }
 
 int main(void)

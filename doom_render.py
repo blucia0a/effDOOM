@@ -12,10 +12,16 @@ Usage:
 Wire format (produced by dump_frame() in main_e1x.c):
     0xDE 0xAD 0xBE 0xEF       4-byte sync marker
     W_lo W_hi H_lo H_hi       frame size, uint16 little-endian
-    W*H bytes                 raw DOOM palette indices 0-255
+    len_lo len_hi             compressed payload length, uint16 little-endian
+    <len bytes>               PackBits RLE of W*H palette indices
 
-The sync marker uses bytes >= 0x80 which never appear in DOOM's UART text
-output, so the script can share the same UART stream as boot messages.
+RLE encoding:
+    header byte b < 0x80  →  b+1 literal bytes follow
+    header byte b >= 0x80 →  b-126 copies of the next byte
+
+The sync marker bytes (0xDE 0xAD 0xBE 0xEF) are never generated as RLE
+headers (0xDE → 96-copy run; 0xAD → 51-copy run; etc.) unless followed by
+the exact continuation pattern, making false syncs statistically negligible.
 
 Requires:
     pip install pygame pyserial
@@ -26,7 +32,7 @@ import sys
 import struct
 
 SYNC   = b'\xde\xad\xbe\xef'
-SCALE  = 8   # window upscale factor (80*8=640 x 60*8=480)
+SCALE  = 4   # window upscale factor (160*4=640 x 120*4=480)
 BAUD   = 115200
 
 
@@ -51,6 +57,28 @@ def load_palette(wad_path):
                 return [(raw[i*3], raw[i*3+1], raw[i*3+2]) for i in range(256)]
     print('WARNING: PLAYPAL not found in WAD, using greyscale', file=sys.stderr)
     return [(i, i, i) for i in range(256)]
+
+
+# ---------------------------------------------------------------------------
+# RLE decompressor (matches rle_encode() in main_e1x.c)
+# ---------------------------------------------------------------------------
+
+def rle_decode(data, expected_size):
+    out = bytearray()
+    i = 0
+    while i < len(data):
+        b = data[i]; i += 1
+        if b >= 0x80:
+            count = b - 126          # 0x80 → 2 copies, 0xFE → 128 copies
+            val   = data[i]; i += 1
+            out += bytes([val]) * count
+        else:
+            count = b + 1            # 0x00 → 1 literal, 0x7F → 128 literals
+            out += data[i:i + count]
+            i += count
+    if len(out) != expected_size:
+        raise ValueError(f'RLE decode: got {len(out)} bytes, expected {expected_size}')
+    return bytes(out)
 
 
 # ---------------------------------------------------------------------------
@@ -123,10 +151,11 @@ def main():
 
             # locate next frame
             find_sync(stream)
-            hdr     = read_exactly(stream, 4)
-            w, h    = struct.unpack('<HH', hdr)
-            raw     = read_exactly(stream, w * h)
-            frame_num += 1
+            hdr          = read_exactly(stream, 6)   # w, h, compressed_len
+            w, h, clen   = struct.unpack('<HHH', hdr)
+            compressed   = read_exactly(stream, clen)
+            raw          = rle_decode(compressed, w * h)
+            frame_num   += 1
 
             # (re)create window if dimensions changed
             win_w, win_h = w * SCALE, h * SCALE
