@@ -243,9 +243,8 @@ static void dump_frame(void)
 
 int main(void)
 {
-    /* Bump UART to 460800 for higher frame throughput */
     eff_uart_cfg_t ucfg = EFF_UART_DEFAULTS;
-    ucfg.baud = 460800;
+    ucfg.baud = 115200;
     eff_uart_init(STDIO_UART, ucfg);
 
     doom_set_print(e1x_print);
