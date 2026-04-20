@@ -33,7 +33,7 @@ import struct
 
 SYNC   = b'\xde\xad\xbe\xef'
 SCALE  = 4   # window upscale factor (160*4=640 x 120*4=480)
-BAUD   = 115200
+BAUD   = 460800
 
 
 # ---------------------------------------------------------------------------
