@@ -12,8 +12,9 @@ Usage:
 Wire format (produced by dump_frame() in main_e1x.c):
     0xDE 0xAD 0xBE 0xEF       4-byte sync marker
     W_lo W_hi H_lo H_hi       frame size, uint16 little-endian
+    flags                     0x00 = keyframe, 0x01 = XOR delta frame
     len_lo len_hi             compressed payload length, uint16 little-endian
-    <len bytes>               PackBits RLE of W*H palette indices
+    <len bytes>               PackBits RLE of keyframe pixels or XOR delta
 
 RLE encoding:
     header byte b < 0x80  →  b+1 literal bytes follow
@@ -141,6 +142,7 @@ def main():
     win        = None
     clock      = pygame.time.Clock()
     frame_num  = 0
+    prev_raw   = None
 
     try:
         while True:
@@ -151,11 +153,28 @@ def main():
 
             # locate next frame
             find_sync(stream)
-            hdr          = read_exactly(stream, 6)   # w, h, compressed_len
-            w, h, clen   = struct.unpack('<HHH', hdr)
-            compressed   = read_exactly(stream, clen)
-            raw          = rle_decode(compressed, w * h)
-            frame_num   += 1
+            hdr               = read_exactly(stream, 7)   # w, h, flags, clen
+            w, h, flags, clen = struct.unpack('<HHBH', hdr)
+            is_delta          = bool(flags & 0x01)
+            compressed        = read_exactly(stream, clen)
+            try:
+                decoded = rle_decode(compressed, w * h)
+            except ValueError as e:
+                print(f'frame decode error: {e}', file=sys.stderr)
+                prev_raw = None   # discard state; wait for next keyframe
+                continue
+            if is_delta:
+                if prev_raw is None or len(prev_raw) != w * h:
+                    continue      # can't apply delta yet; wait for keyframe
+                if HAS_NP:
+                    raw = bytes(np.frombuffer(decoded, dtype=np.uint8) ^
+                                np.frombuffer(bytes(prev_raw), dtype=np.uint8))
+                else:
+                    raw = bytes(a ^ b for a, b in zip(decoded, prev_raw))
+            else:
+                raw = decoded
+            prev_raw  = bytearray(raw)
+            frame_num += 1
 
             # (re)create window if dimensions changed
             win_w, win_h = w * SCALE, h * SCALE
