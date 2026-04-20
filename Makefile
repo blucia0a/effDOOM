@@ -1,10 +1,10 @@
-RIPTOOLS  ?= /home/blucia/effcc/riptools/build
-RIPPER    ?= $(RIPTOOLS)/bin/effcc
-OBJCOPY   ?= $(RIPTOOLS)/bin/llvm-objcopy
+EFFTOOLS  ?= $(HOME)/effcc_bld
+EFFCC    ?= $(EFFTOOLS)/bin/effcc
+OBJCOPY   ?= $(EFFTOOLS)/bin/llvm-objcopy
 PUREDOOMDIR ?= PureDOOM
 
-SDK_ROOT   = /home/blucia/cvsandbox/apps/eff_sdk
-SDK_BUILD  = /home/blucia/cvsandbox/apps/build/eff_sdk
+SDK_ROOT  ?= $(HOME)/eff_sdk
+SDK_BUILD ?= $(HOME)/eff_sdk_bld
 SDK_INC    = $(SDK_ROOT)/include
 
 LIBEFF        = $(SDK_BUILD)/stdlib/libeff.a
@@ -22,15 +22,15 @@ STDIO_OPTS = -DSTDIO_UART=UART_3 -DSTDIO_PINMUX=PINMUX_3
 
 # DOOM_IMPLEMENT_MALLOC/EXIT: use stdlib malloc/free and exit() from libeff.a.
 # File I/O, gettime, print, and getenv are provided via callbacks in main_e1x.c.
-BASERIPPERFLAGS = \
+BASEEFFCCFLAGS = \
     -DDOOM_IMPLEMENT_MALLOC \
     -DDOOM_IMPLEMENT_EXIT \
     -DEFF_ARCH_E1X $(STDIO_OPTS) \
     --target=e1x -O3 -c \
     -I$(SDK_INC) -IPureDOOM/src/DOOM -flto
 
-YESRIPPERFLAGS = $(BASERIPPERFLAGS) --promote-func-name-filter=.*
-NORIPPERFLAGS  = $(BASERIPPERFLAGS) --promote-func-name-filter=
+YESEFFCCFLAGS = $(BASEEFFCCFLAGS) --promote-func-name-filter=.*
+NOEFFCCFLAGS  = $(BASEEFFCCFLAGS) --promote-func-name-filter=
 
 E1X_LDFLAGS = \
     -O3 -flto --target=e1x \
@@ -58,8 +58,8 @@ NOOBJS  =
 
 OBJS = $(YESOBJS) $(NOOBJS) $(BLD_DIR)/doom_wad.o
 
-$(YESOBJS): RIPPERFLAGS := $(YESRIPPERFLAGS)
-$(NOOBJS):  RIPPERFLAGS := $(NORIPPERFLAGS)
+$(YESOBJS): EFFCCFLAGS := $(YESEFFCCFLAGS)
+$(NOOBJS):  EFFCCFLAGS := $(NOEFFCCFLAGS)
 
 all: create_bld $(BLD_DIR)/doom.hex
 
@@ -70,7 +70,7 @@ $(BLD_DIR)/doom.hex: $(BLD_DIR)/doom
 	objcopy -Overilog $< $@
 
 $(BLD_DIR)/doom: $(OBJS)
-	$(RIPPER) -o $@ $(OBJS) $(E1X_LDFLAGS)
+	$(EFFCC) -o $@ $(OBJS) $(E1X_LDFLAGS)
 
 # Embed WAD as read-only data in the ELF binary.
 # Symbols: _binary_<name>_start/_end (with dots replaced by underscores).
@@ -82,13 +82,13 @@ $(BLD_DIR)/doom_wad.o: $(WAD_FILE)
 	    $< $@
 
 $(BLD_DIR)/%.o: $(SRC_DIR)/%.c
-	-$(RIPPER) $(RIPPERFLAGS) -o $@ $<
+	-$(EFFCC) $(EFFCCFLAGS) -o $@ $<
 
 $(BLD_DIR)/main_e1x.o: main_e1x.c
-	-$(RIPPER) $(RIPPERFLAGS) -o $@ $<
+	-$(EFFCC) $(EFFCCFLAGS) -o $@ $<
 
 run:
-	LD_LIBRARY_PATH=$(RIPTOOLS)/lib $(BLD_DIR)/doom
+	LD_LIBRARY_PATH=$(EFFTOOLS)/lib $(BLD_DIR)/doom
 
 clean:
 	-rm -f $(OBJS) $(BLD_DIR)/doom $(BLD_DIR)/doom.hex
