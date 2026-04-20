@@ -62,13 +62,15 @@ extern char __llvm_libc_heap_limit[];
 
 byte* I_ZoneBase(int* size)
 {
-    /* Total linker heap minus 320KB pre-zone mallocs (screen_buffer +
-     * final_screen_buffer) minus 128KB post-zone reserve (screens[0],
-     * lumpinfo, lumpcache, fileinfo), aligned down to 8 bytes. */
+    /* Total linker heap minus pre-zone mallocs minus post-zone reserve.
+     * Pre-zone (in order): screen_buffer(64KB) + final_screen_buffer(256KB)
+     *   from doom_init, then V_Init screens[0..3](256KB) from D_DoomMain.
+     * Post-zone reserve: lumpinfo + lumpcache + fileinfo (approx 128KB). */
     byte* base;
     int avail = (int)(__llvm_libc_heap_limit - _end)
-                - (320 * 1024)
-                - (128 * 1024);
+                - (320 * 1024)   /* screen_buffer + final_screen_buffer */
+                - (256 * 1024)   /* V_Init: screens[0..3] = 4*320*200 */
+                - (128 * 1024);  /* post-zone: lumpinfo, lumpcache, fileinfo */
     avail &= ~7;
     if (avail < 0) avail = 0;
     *size = avail;

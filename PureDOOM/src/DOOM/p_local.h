@@ -72,6 +72,7 @@ extern thinker_t thinkercap;
 void P_InitThinkers(void);
 void P_AddThinker(thinker_t* thinker);
 void P_RemoveThinker(thinker_t* thinker);
+void thinker_nop_and_remove(void* thinker_void);
 
 
 //

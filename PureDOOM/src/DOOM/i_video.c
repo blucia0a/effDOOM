@@ -139,5 +139,7 @@ void I_SetPalette(byte* palette)
 
 void I_InitGraphics(void)
 {
-    screens[0] = (unsigned char*)doom_malloc(SCREENWIDTH * SCREENHEIGHT);
+    /* screens[0..3] are already allocated by V_Init() via I_AllocLow().
+     * Re-allocating screens[0] here would waste 64KB and corrupt the
+     * zone size accounting in I_ZoneBase. */
 }

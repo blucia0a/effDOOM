@@ -66,6 +66,21 @@ void P_AddThinker(thinker_t* thinker)
 }
 
 
+/* Called by P_RunThinkers for thinkers marked for removal.
+ * Unlinks the thinker from the doubly-linked list and frees it.
+ * Using a real function pointer (actionf_p1 signature) instead of the
+ * acint=-1 sentinel avoids LTO's function-pointer alignment analysis
+ * proving acint==-1 impossible (RISC-V code pointers are always even)
+ * and eliminating the entire removal branch (crash at mepc=0xfffffffe). */
+void thinker_nop_and_remove(void* thinker_void)
+{
+    thinker_t* thinker = (thinker_t*)thinker_void;
+    thinker->next->prev = thinker->prev;
+    thinker->prev->next = thinker->next;
+    Z_Free(thinker);
+}
+
+
 //
 // P_RemoveThinker
 // Deallocation is lazy -- it will not actually be freed
@@ -73,8 +88,7 @@ void P_AddThinker(thinker_t* thinker)
 //
 void P_RemoveThinker(thinker_t* thinker)
 {
-    // FIXME: NOP.
-    thinker->function.acv = (actionf_v)(-1);
+    thinker->function.acp1 = thinker_nop_and_remove;
 }
 
 
@@ -84,23 +98,18 @@ void P_RemoveThinker(thinker_t* thinker)
 void P_RunThinkers(void)
 {
     thinker_t* currentthinker;
+    thinker_t* nextthinker;
 
     currentthinker = thinkercap.next;
     while (currentthinker != &thinkercap)
     {
-        if (currentthinker->function.acv == (actionf_v)(-1))
-        {
-            // time to remove it
-            currentthinker->next->prev = currentthinker->prev;
-            currentthinker->prev->next = currentthinker->next;
-            Z_Free(currentthinker);
-        }
-        else
-        {
-            if (currentthinker->function.acp1)
-                currentthinker->function.acp1(currentthinker);
-        }
-        currentthinker = currentthinker->next;
+        /* Save next pointer before calling the thinker; thinker_nop_and_remove
+         * calls Z_Free on the current thinker, so we must not touch it after
+         * the call.  nextthinker points to a different block and stays valid. */
+        nextthinker = currentthinker->next;
+        if (currentthinker->function.acp1)
+            currentthinker->function.acp1(currentthinker);
+        currentthinker = nextthinker;
     }
 }
 

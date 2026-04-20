@@ -40,7 +40,12 @@ typedef union
     actionf_p1 acp1;
     actionf_v  acv;
     actionf_p2 acp2;
+    int        acint; /* integer overlay: use for sentinel checks to avoid UB */
 } actionf_t;
+
+/* Sentinel stored via acint to avoid undefined behaviour of comparing
+ * a function pointer to a non-pointer value under -O3 / LTO. */
+#define THINKER_REMOVED (-1)
 
 
 // Historically, "think_t" is yet another

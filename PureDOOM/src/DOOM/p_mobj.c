@@ -422,7 +422,7 @@ void P_MobjThinker(mobj_t* mobj)
         P_XYMovement(mobj);
 
         // FIXME: decent NOP/0/Nil function pointer please.
-        if (mobj->thinker.function.acv == (actionf_v)(-1))
+        if (mobj->thinker.function.acp1 == (actionf_p1)thinker_nop_and_remove)
             return;                // mobj was removed
     }
     if ((mobj->z != mobj->floorz)
@@ -431,7 +431,7 @@ void P_MobjThinker(mobj_t* mobj)
         P_ZMovement(mobj);
 
         // FIXME: decent NOP/0/Nil function pointer please.
-        if (mobj->thinker.function.acv == (actionf_v)(-1))
+        if (mobj->thinker.function.acp1 == (actionf_p1)thinker_nop_and_remove)
             return;                // mobj was removed
     }
 

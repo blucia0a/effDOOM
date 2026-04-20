@@ -217,11 +217,13 @@ int main(void)
     int tick = 0;
     int update_cnt = 0;
     for (;;) {
-        if (update_cnt < 5)
-            eff_uart_puts(STDIO_UART, "[doom] update\r\n");
+        /* Print tic number: every 50 tics + every tic near the crash point */
+        if ((update_cnt % 50 == 0) || (update_cnt >= 255 && update_cnt <= 285)) {
+            eff_uart_puts(STDIO_UART, "[doom] tic ");
+            uart_hex32((unsigned int)update_cnt);
+            eff_uart_puts(STDIO_UART, "\r\n");
+        }
         doom_force_update();
-        if (update_cnt < 5)
-            eff_uart_puts(STDIO_UART, "[doom] update done\r\n");
         update_cnt++;
         if (++tick >= FRAME_SKIP) {
             tick = 0;
