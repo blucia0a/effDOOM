@@ -243,8 +243,8 @@ flush:
  */
 #define DOOM_W      320
 #define DOOM_H      200
-#define OUT_W       160
-#define OUT_H       120
+#define OUT_W       120
+#define OUT_H       90
 #define FRAME_SKIP   12 
 
 #define LZW_BUF_MAX  32768
