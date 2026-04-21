@@ -108,7 +108,7 @@ def lzw_decode(data, expected_size):
         out += entry
         if prev is not None and len(table) < LZW_MAX:
             table.append(prev + entry[:1])
-            if len(table) == (1 << code_bits) and code_bits < 12:
+            if len(table) == (1 << code_bits) - 1 and code_bits < 12:
                 code_bits += 1
         prev = entry
 
