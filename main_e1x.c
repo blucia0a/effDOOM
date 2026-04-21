@@ -182,41 +182,34 @@ static int rle_encode(const unsigned char *src, int n,
     return di;
 }
 
-/* --- Frame dump: delta-compressed pixel stream over UART ----------------
+/* --- Frame dump: RLE-compressed pixel stream over UART ------------------
  *
  * Wire format:
  *   [0xDE 0xAD 0xBE 0xEF]   4-byte sync marker
  *   [W_lo W_hi H_lo H_hi]   frame dimensions, uint16 LE
- *   [flags]                  0x00 = keyframe, 0x01 = XOR delta frame
  *   [len_lo len_hi]          compressed payload length, uint16 LE
- *   [compressed bytes]       PackBits RLE of keyframe pixels or XOR delta
+ *   [compressed bytes]       PackBits RLE of W×H palette indices
  *
- * Every KEYFRAME_INTERVAL frames a full keyframe is sent; the rest are XOR
- * deltas against the previous frame.  Static regions XOR to 0x00 and
- * compress as long zero-runs (128 zeros → 2 bytes), cutting typical
- * gameplay frames from ~5500 B to ~800–2000 B and enabling FRAME_SKIP=5
- * (~7 fps) within the 11520 B/s budget at 115200 baud.
+ * 160×120 raw = 19200 B.  DOOM's flat-shaded palette frames typically
+ * compress 3–4×, giving ~5000–6500 B/frame.  At FRAME_SKIP=20 (1.75 fps)
+ * that's ~9000–11400 B/s — within the 11520 B/s limit at 115200 baud.
  */
-#define DOOM_W            320
-#define DOOM_H            200
-#define OUT_W             160
-#define OUT_H             120
-#define FRAME_SKIP          5
-#define KEYFRAME_INTERVAL  30
+#define DOOM_W      320
+#define DOOM_H      200
+#define OUT_W       160
+#define OUT_H       120
+#define FRAME_SKIP   20
 
 /* worst-case RLE: ceil(OUT_W*OUT_H / 128) * 129 = 150*129 = 19350 bytes */
 #define RLE_BUF_MAX  20480
 
 static unsigned char frame_raw[OUT_W * OUT_H];
 static unsigned char frame_rle[RLE_BUF_MAX];
-static unsigned char prev_frame[OUT_W * OUT_H];
-static int           frame_count;
 
 static void dump_frame(void)
 {
     const unsigned char *fb = doom_get_framebuffer(1);
     int i = 0;
-    int is_keyframe = (frame_count % KEYFRAME_INTERVAL == 0);
 
     /* Downsample 320×200 → OUT_W×OUT_H (nearest-neighbour) */
     for (int y = 0; y < OUT_H; y++) {
@@ -226,20 +219,6 @@ static void dump_frame(void)
             frame_raw[i++] = fb[fy * DOOM_W + fx];
         }
     }
-
-    if (is_keyframe) {
-        /* Save raw pixels for next delta */
-        for (int j = 0; j < OUT_W * OUT_H; j++)
-            prev_frame[j] = frame_raw[j];
-    } else {
-        /* XOR delta in-place; update prev_frame to current raw */
-        for (int j = 0; j < OUT_W * OUT_H; j++) {
-            unsigned char cur = frame_raw[j];
-            frame_raw[j]  = cur ^ prev_frame[j];
-            prev_frame[j] = cur;
-        }
-    }
-    frame_count++;
 
     int clen = rle_encode(frame_raw, OUT_W * OUT_H, frame_rle, RLE_BUF_MAX);
     if (clen < 0) return;
@@ -254,8 +233,6 @@ static void dump_frame(void)
     eff_uart_putc(STDIO_UART, (OUT_W >> 8) & 0xFF);
     eff_uart_putc(STDIO_UART, OUT_H & 0xFF);
     eff_uart_putc(STDIO_UART, (OUT_H >> 8) & 0xFF);
-    /* flags: 0x00=keyframe, 0x01=delta */
-    eff_uart_putc(STDIO_UART, is_keyframe ? 0x00 : 0x01);
     /* compressed length (uint16 LE) */
     eff_uart_putc(STDIO_UART, clen & 0xFF);
     eff_uart_putc(STDIO_UART, (clen >> 8) & 0xFF);
