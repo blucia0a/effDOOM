@@ -13,15 +13,13 @@ Wire format (produced by dump_frame() in main_e1x.c):
     0xDE 0xAD 0xBE 0xEF       4-byte sync marker
     W_lo W_hi H_lo H_hi       frame size, uint16 little-endian
     len_lo len_hi             compressed payload length, uint16 little-endian
-    <len bytes>               PackBits RLE of W*H palette indices
+    <len bytes>               12-bit fixed-width LZW of W*H palette indices
 
-RLE encoding:
-    header byte b < 0x80  →  b+1 literal bytes follow
-    header byte b >= 0x80 →  b-126 copies of the next byte
-
-The sync marker bytes (0xDE 0xAD 0xBE 0xEF) are never generated as RLE
-headers (0xDE → 96-copy run; 0xAD → 51-copy run; etc.) unless followed by
-the exact continuation pattern, making false syncs statistically negligible.
+LZW encoding:
+    12-bit codes packed LSB-first into bytes (GIF bit order)
+    Code 256 = CLEAR (reset dictionary), 257 = EOI
+    Codes 258-4095 = dictionary entries built during encoding
+    Dictionary resets automatically when full (4096 codes)
 
 Requires:
     pip install pygame pyserial
@@ -60,24 +58,54 @@ def load_palette(wad_path):
 
 
 # ---------------------------------------------------------------------------
-# RLE decompressor (matches rle_encode() in main_e1x.c)
+# LZW decompressor (matches lzw_encode() in main_e1x.c)
 # ---------------------------------------------------------------------------
 
-def rle_decode(data, expected_size):
-    out = bytearray()
-    i = 0
-    while i < len(data):
-        b = data[i]; i += 1
-        if b >= 0x80:
-            count = b - 126          # 0x80 → 2 copies, 0xFE → 128 copies
-            val   = data[i]; i += 1
-            out += bytes([val]) * count
+def lzw_decode(data, expected_size):
+    LZW_CLEAR = 256
+    LZW_EOI   = 257
+    LZW_MAX   = 4096
+
+    # Unpack 12-bit codes, LSB-first
+    codes = []
+    bit_buf = 0
+    bit_cnt = 0
+    for byte in data:
+        bit_buf |= byte << bit_cnt
+        bit_cnt += 8
+        while bit_cnt >= 12:
+            codes.append(bit_buf & 0xFFF)
+            bit_buf >>= 12
+            bit_cnt -= 12
+
+    # Decode codes using a string table
+    def make_table():
+        return [bytes([i]) for i in range(256)] + [None, None]  # CLEAR, EOI slots
+
+    table = make_table()
+    out   = bytearray()
+    prev  = None
+
+    for code in codes:
+        if code == LZW_CLEAR:
+            table = make_table()
+            prev  = None
+            continue
+        if code == LZW_EOI:
+            break
+        if code < len(table) and table[code] is not None:
+            entry = table[code]
+        elif code == len(table) and prev is not None:
+            entry = prev + prev[:1]   # KwKwK special case
         else:
-            count = b + 1            # 0x00 → 1 literal, 0x7F → 128 literals
-            out += data[i:i + count]
-            i += count
+            raise ValueError(f'LZW bad code {code} (table size {len(table)})')
+        out += entry
+        if prev is not None and len(table) < LZW_MAX:
+            table.append(prev + entry[:1])
+        prev = entry
+
     if len(out) != expected_size:
-        raise ValueError(f'RLE decode: got {len(out)} bytes, expected {expected_size}')
+        raise ValueError(f'LZW decode: got {len(out)} bytes, expected {expected_size}')
     return bytes(out)
 
 
@@ -154,7 +182,7 @@ def main():
             hdr          = read_exactly(stream, 6)   # w, h, compressed_len
             w, h, clen   = struct.unpack('<HHH', hdr)
             compressed   = read_exactly(stream, clen)
-            raw          = rle_decode(compressed, w * h)
+            raw          = lzw_decode(compressed, w * h)
             frame_num   += 1
 
             # (re)create window if dimensions changed

@@ -142,57 +142,102 @@ long except_handler(long cause, long epc)
     return epc;
 }
 
-/* --- PackBits-style RLE encoder -----------------------------------------
- * Header byte meaning:
- *   0x00..0x7F  →  (b + 1) literal bytes follow           (1..128)
- *   0x80..0xFF  →  (b - 126) copies of the next byte      (2..129)
- * Worst case: ceil(n/128) * 129 bytes (all-unique input with 128-byte
- * literal batching) — about 1% overhead, never more than ~1.008 × n. */
-static int rle_encode(const unsigned char *src, int n,
+/* --- 12-bit fixed-width LZW encoder -------------------------------------
+ *
+ * Dictionary is an open-addressing hash table mapping (prefix<<8|byte) to
+ * a 12-bit code.  Codes 0-255 = literals, 256 = CLEAR, 257 = EOI,
+ * 258-4095 = dictionary entries.  Codes are packed LSB-first into bytes
+ * (same bit order as GIF).  When the dictionary fills (4096 codes) a CLEAR
+ * is emitted and the dictionary resets — guaranteeing the output never
+ * exceeds the input by more than a small constant per segment.
+ *
+ * Worst-case output: each 3838-code segment encodes ≥1 byte each, packed
+ * at 1.5 bytes/code → ≤28800 bytes for 19200 input bytes.  LZW_BUF_MAX
+ * is sized to 32768 to give comfortable headroom.
+ */
+#define LZW_CLEAR   256u
+#define LZW_EOI     257u
+#define LZW_FIRST   258u
+#define LZW_MAX     4096u
+#define LZW_HTAB    5003            /* prime > LZW_MAX */
+#define LZW_EMPTY   0xFFFFFFFFu
+
+static unsigned int   lzw_key[LZW_HTAB];
+static unsigned short lzw_val[LZW_HTAB];
+
+static void lzw_htclear(void)
+{
+    for (int i = 0; i < LZW_HTAB; i++) lzw_key[i] = LZW_EMPTY;
+}
+
+static int lzw_htfind(unsigned int k)
+{
+    int h = (int)((k * 0x9e3779b9u) >> 19) % LZW_HTAB;
+    while (lzw_key[h] != LZW_EMPTY && lzw_key[h] != k)
+        if (++h == LZW_HTAB) h = 0;
+    return h;
+}
+
+static int lzw_encode(const unsigned char *src, int n,
                       unsigned char *dst, int cap)
 {
-    int si = 0, di = 0;
-    while (si < n) {
-        /* Count run of identical bytes (max 128) */
-        int run = 1;
-        while (si + run < n && run < 128 && src[si + run] == src[si])
-            run++;
+    unsigned int bit_buf = 0;
+    int bit_cnt = 0, di = 0, next_code = LZW_FIRST;
 
-        if (run >= 2) {
-            if (di + 2 > cap) return -1;
-            dst[di++] = (unsigned char)(run + 126);   /* 0x80..0xFE */
-            dst[di++] = src[si];
-            si += run;
+#define EMIT(c) do {                                         \
+    bit_buf |= (unsigned int)(c) << bit_cnt;                 \
+    bit_cnt += 12;                                           \
+    while (bit_cnt >= 8) {                                   \
+        if (di >= cap) return -1;                            \
+        dst[di++] = (unsigned char)(bit_buf & 0xFF);        \
+        bit_buf >>= 8; bit_cnt -= 8;                        \
+    }                                                        \
+} while (0)
+
+    lzw_htclear();
+    EMIT(LZW_CLEAR);
+
+    if (n == 0) { EMIT(LZW_EOI); goto flush; }
+
+    unsigned int prefix = src[0];
+    for (int si = 1; si < n; si++) {
+        unsigned int c   = src[si];
+        unsigned int key = (prefix << 8) | c;
+        int h = lzw_htfind(key);
+        if (lzw_key[h] == key) {
+            prefix = lzw_val[h];
         } else {
-            /* Accumulate literals, stopping before any run of >=2 */
-            int litstart = si;
-            int litcount = 0;
-            while (si < n && litcount < 128) {
-                if (si + 1 < n && src[si] == src[si + 1]) break;
-                si++;
-                litcount++;
+            EMIT(prefix);
+            if (next_code < LZW_MAX) {
+                lzw_key[h] = key;
+                lzw_val[h] = (unsigned short)next_code++;
+            } else {
+                EMIT(LZW_CLEAR);
+                lzw_htclear();
+                next_code = LZW_FIRST;
             }
-            if (litcount == 0) { si++; litcount = 1; } /* lone byte before long run */
-            if (di + 1 + litcount > cap) return -1;
-            dst[di++] = (unsigned char)(litcount - 1);  /* 0x00..0x7F */
-            for (int i = 0; i < litcount; i++)
-                dst[di++] = src[litstart + i];
+            prefix = c;
         }
     }
+    EMIT(prefix);
+    EMIT(LZW_EOI);
+
+flush:
+    if (bit_cnt > 0) {
+        if (di >= cap) return -1;
+        dst[di++] = (unsigned char)(bit_buf & 0xFF);
+    }
+#undef EMIT
     return di;
 }
 
-/* --- Frame dump: RLE-compressed pixel stream over UART ------------------
+/* --- Frame dump: LZW-compressed pixel stream over UART ------------------
  *
  * Wire format:
  *   [0xDE 0xAD 0xBE 0xEF]   4-byte sync marker
  *   [W_lo W_hi H_lo H_hi]   frame dimensions, uint16 LE
  *   [len_lo len_hi]          compressed payload length, uint16 LE
- *   [compressed bytes]       PackBits RLE of W×H palette indices
- *
- * 160×120 raw = 19200 B.  DOOM's flat-shaded palette frames typically
- * compress 3–4×, giving ~5000–6500 B/frame.  At FRAME_SKIP=20 (1.75 fps)
- * that's ~9000–11400 B/s — within the 11520 B/s limit at 115200 baud.
+ *   [compressed bytes]       12-bit fixed-width LZW of W×H palette indices
  */
 #define DOOM_W      320
 #define DOOM_H      200
@@ -200,11 +245,10 @@ static int rle_encode(const unsigned char *src, int n,
 #define OUT_H       120
 #define FRAME_SKIP   20
 
-/* worst-case RLE: ceil(OUT_W*OUT_H / 128) * 129 = 150*129 = 19350 bytes */
-#define RLE_BUF_MAX  20480
+#define LZW_BUF_MAX  32768
 
 static unsigned char frame_raw[OUT_W * OUT_H];
-static unsigned char frame_rle[RLE_BUF_MAX];
+static unsigned char frame_lzw[LZW_BUF_MAX];
 
 static void dump_frame(void)
 {
@@ -220,7 +264,7 @@ static void dump_frame(void)
         }
     }
 
-    int clen = rle_encode(frame_raw, OUT_W * OUT_H, frame_rle, RLE_BUF_MAX);
+    int clen = lzw_encode(frame_raw, OUT_W * OUT_H, frame_lzw, LZW_BUF_MAX);
     if (clen < 0) return;
 
     /* sync marker */
@@ -238,7 +282,7 @@ static void dump_frame(void)
     eff_uart_putc(STDIO_UART, (clen >> 8) & 0xFF);
     /* compressed payload */
     for (int j = 0; j < clen; j++)
-        eff_uart_putc(STDIO_UART, frame_rle[j]);
+        eff_uart_putc(STDIO_UART, frame_lzw[j]);
 }
 
 int main(void)
