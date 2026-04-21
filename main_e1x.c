@@ -94,10 +94,7 @@ static void e1x_gettime(int *sec, int *usec)
 
 /* --- Print via UART --- */
 
-static void e1x_print(const char *str)
-{
-    eff_uart_puts(STDIO_UART, str);
-}
+static void e1x_print(const char *str) { (void)str; }
 
 /* --- Hex diagnostics: print a 32-bit value as 0xXXXXXXXX over UART --- */
 
@@ -309,35 +306,15 @@ int main(void)
     /* malloc: use DOOM_IMPLEMENT_MALLOC (C library malloc/free) which draws
      * from the linker-defined heap (_end → __llvm_libc_heap_limit). */
 
-    eff_uart_puts(STDIO_UART, "[doom] _end=");
-    uart_hex32((unsigned int)(void*)_end);
-    eff_uart_puts(STDIO_UART, " heap_limit=");
-    uart_hex32((unsigned int)(void*)__llvm_libc_heap_limit);
-    eff_uart_puts(STDIO_UART, " wad_size=");
-    uart_hex32((unsigned int)DOOM_WAD_SIZE);
-    eff_uart_puts(STDIO_UART, "\r\n");
-
-    eff_uart_puts(STDIO_UART, "[doom] before doom_init\r\n");
-
     static char *argv[] = { "doom", "-nosound", 0 };
     doom_init(2, argv,
               DOOM_FLAG_HIDE_MOUSE_OPTIONS |
               DOOM_FLAG_HIDE_SOUND_OPTIONS  |
               DOOM_FLAG_HIDE_MUSIC_OPTIONS);
 
-    eff_uart_puts(STDIO_UART, "[doom] doom_init complete\r\n");
-
     int tick = 0;
-    int update_cnt = 0;
     for (;;) {
-        /* Print tic number: every 50 tics + every tic near the crash point */
-        if ((update_cnt % 50 == 0) || (update_cnt >= 255 && update_cnt <= 285)) {
-            eff_uart_puts(STDIO_UART, "[doom] tic ");
-            uart_hex32((unsigned int)update_cnt);
-            eff_uart_puts(STDIO_UART, "\r\n");
-        }
         doom_force_update();
-        update_cnt++;
         if (++tick >= FRAME_SKIP) {
             tick = 0;
             dump_frame();
