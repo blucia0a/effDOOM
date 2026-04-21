@@ -190,7 +190,11 @@ def main():
             hdr          = read_exactly(stream, 6)   # w, h, compressed_len
             w, h, clen   = struct.unpack('<HHH', hdr)
             compressed   = read_exactly(stream, clen)
-            raw          = lzw_decode(compressed, w * h)
+            try:
+                raw = lzw_decode(compressed, w * h)
+            except ValueError as e:
+                print(f'frame {frame_num}: decode error ({e}), skipping', file=sys.stderr)
+                continue
             # Undo horizontal prediction filter
             if HAS_NP:
                 raw = np.cumsum(
