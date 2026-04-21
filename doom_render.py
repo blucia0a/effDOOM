@@ -66,30 +66,36 @@ def lzw_decode(data, expected_size):
     LZW_EOI   = 257
     LZW_MAX   = 4096
 
-    # Unpack 12-bit codes, LSB-first
-    codes = []
-    bit_buf = 0
-    bit_cnt = 0
-    for byte in data:
-        bit_buf |= byte << bit_cnt
-        bit_cnt += 8
-        while bit_cnt >= 12:
-            codes.append(bit_buf & 0xFFF)
-            bit_buf >>= 12
-            bit_cnt -= 12
+    # Variable-width bit reader: starts at 9 bits, grows to 12
+    bit_buf   = 0
+    bit_cnt   = 0
+    pos       = 0
+    code_bits = 9
 
-    # Decode codes using a string table
+    def read_code():
+        nonlocal bit_buf, bit_cnt, pos
+        while bit_cnt < code_bits and pos < len(data):
+            bit_buf |= data[pos] << bit_cnt
+            bit_cnt += 8
+            pos     += 1
+        code     = bit_buf & ((1 << code_bits) - 1)
+        bit_buf >>= code_bits
+        bit_cnt  -= code_bits
+        return code
+
     def make_table():
-        return [bytes([i]) for i in range(256)] + [None, None]  # CLEAR, EOI slots
+        return [bytes([i]) for i in range(256)] + [None, None]
 
     table = make_table()
     out   = bytearray()
     prev  = None
 
-    for code in codes:
+    while True:
+        code = read_code()
         if code == LZW_CLEAR:
-            table = make_table()
-            prev  = None
+            table     = make_table()
+            prev      = None
+            code_bits = 9
             continue
         if code == LZW_EOI:
             break
@@ -102,6 +108,8 @@ def lzw_decode(data, expected_size):
         out += entry
         if prev is not None and len(table) < LZW_MAX:
             table.append(prev + entry[:1])
+            if len(table) == (1 << code_bits) and code_bits < 12:
+                code_bits += 1
         prev = entry
 
     if len(out) != expected_size:
@@ -183,6 +191,17 @@ def main():
             w, h, clen   = struct.unpack('<HHH', hdr)
             compressed   = read_exactly(stream, clen)
             raw          = lzw_decode(compressed, w * h)
+            # Undo horizontal prediction filter
+            if HAS_NP:
+                raw = np.cumsum(
+                    np.frombuffer(raw, dtype=np.uint8).reshape(h, w),
+                    axis=1, dtype=np.uint8).tobytes()
+            else:
+                arr = bytearray(raw)
+                for row in range(h):
+                    for x in range(1, w):
+                        arr[row*w + x] = (arr[row*w + x] + arr[row*w + x-1]) & 0xFF
+                raw = bytes(arr)
             frame_num   += 1
 
             # (re)create window if dimensions changed

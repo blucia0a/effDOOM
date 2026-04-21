@@ -183,10 +183,11 @@ static int lzw_encode(const unsigned char *src, int n,
 {
     unsigned int bit_buf = 0;
     int bit_cnt = 0, di = 0, next_code = LZW_FIRST;
+    int code_bits = 9;                    /* variable-width: start at 9 bits */
 
 #define EMIT(c) do {                                         \
     bit_buf |= (unsigned int)(c) << bit_cnt;                 \
-    bit_cnt += 12;                                           \
+    bit_cnt += code_bits;                                    \
     while (bit_cnt >= 8) {                                   \
         if (di >= cap) return -1;                            \
         dst[di++] = (unsigned char)(bit_buf & 0xFF);        \
@@ -211,10 +212,14 @@ static int lzw_encode(const unsigned char *src, int n,
             if (next_code < LZW_MAX) {
                 lzw_key[h] = key;
                 lzw_val[h] = (unsigned short)next_code++;
+                /* widen code after filling current range */
+                if (next_code == (unsigned)(1 << code_bits) && code_bits < 12)
+                    code_bits++;
             } else {
                 EMIT(LZW_CLEAR);
                 lzw_htclear();
                 next_code = LZW_FIRST;
+                code_bits = 9;
             }
             prefix = c;
         }
@@ -243,7 +248,7 @@ flush:
 #define DOOM_H      200
 #define OUT_W       160
 #define OUT_H       120
-#define FRAME_SKIP   20
+#define FRAME_SKIP   12 
 
 #define LZW_BUF_MAX  32768
 
@@ -263,6 +268,14 @@ static void dump_frame(void)
             frame_raw[i++] = fb[fy * DOOM_W + fx];
         }
     }
+
+    /* Horizontal prediction filter (PNG "Sub"): replace each pixel with
+     * pixel - left_neighbor.  Solid regions become zero-runs; LZW then
+     * builds long zero-sequence codes rapidly.  Process right-to-left so
+     * the in-place subtraction reads original values. */
+    for (int y = 0; y < OUT_H; y++)
+        for (int x = OUT_W - 1; x >= 1; x--)
+            frame_raw[y * OUT_W + x] -= frame_raw[y * OUT_W + x - 1];
 
     int clen = lzw_encode(frame_raw, OUT_W * OUT_H, frame_lzw, LZW_BUF_MAX);
     if (clen < 0) return;
